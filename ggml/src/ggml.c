@@ -17,6 +17,10 @@
 
 #if defined(_MSC_VER) || defined(__MINGW32__)
 #include <malloc.h> // using malloc.h with MSC/MINGW
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #elif !defined(__FreeBSD__) && !defined(__NetBSD__) && !defined(__OpenBSD__)
 #include <alloca.h>
 #endif
@@ -328,6 +332,16 @@ void ggml_log_callback_default(enum ggml_log_level level, const char * text, voi
 //#define GGML_SOFT_MAX_ACCELERATE
 #endif
 
+// Controls whether CPU buffers are allocated from large pages (Windows only).
+static bool ggml_large_pages = false;
+
+void ggml_set_large_pages(bool enabled) {
+    ggml_large_pages = enabled;
+}
+
+bool ggml_large_pages_enabled(void) {
+    return ggml_large_pages;
+}
 
 void * ggml_aligned_malloc(size_t size) {
 #if defined(__s390x__)
@@ -337,12 +351,63 @@ void * ggml_aligned_malloc(size_t size) {
 #endif
 
 #if defined(_MSC_VER) || defined(__MINGW32__)
-    return _aligned_malloc(size, alignment);
-#else
+
     if (size == 0) {
         GGML_LOG_WARN("Behavior may be unexpected when allocating 0 bytes for ggml_aligned_malloc!\n");
         return NULL;
     }
+
+    if (ggml_large_pages_enabled()) {
+        GGML_UNUSED(alignment);
+        // Allocate from large pages so that the model parameters and
+        // other CPU buffers live in large pages instead of the regular heap.
+        // Note: this requires the "Lock pages in memory" user right, otherwise the
+        // allocation fails (and we report an error rather than silently falling back).
+        static size_t large_page_min = 0;
+        if (large_page_min == 0) {
+            large_page_min = (size_t) GetLargePageMinimum();
+        }
+
+        if (large_page_min == 0) {
+            GGML_LOG_ERROR("ggml_aligned_malloc: large pages are not supported on this system\n");
+            return NULL;
+        }
+
+        // Enable the SeLockMemoryPrivilege ("Lock pages in memory") once.
+        // The privilege is present in the token by default but disabled; VirtualAlloc
+        // with MEM_LARGE_PAGES fails with ERROR_PRIVILEGE_NOT_HELD unless it is enabled.
+        static bool privilege_enabled = false;
+        if (!privilege_enabled) {
+            HANDLE hToken = NULL;
+            if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+                TOKEN_PRIVILEGES tp;
+                LUID luid;
+                if (LookupPrivilegeValue(NULL, SE_LOCK_MEMORY_NAME, &luid)) {
+                    tp.PrivilegeCount           = 1;
+                    tp.Privileges[0].Luid       = luid;
+                    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+                    AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(TOKEN_PRIVILEGES), NULL, NULL);
+                    // GetLastError() returns ERROR_SUCCESS if the privilege was enabled
+                    privilege_enabled = (GetLastError() == ERROR_SUCCESS);
+                }
+                CloseHandle(hToken);
+            }
+        }
+
+        // MEM_LARGE_PAGES requires the size to be a multiple of the large page size
+        const size_t size_aligned = (size + large_page_min - 1) / large_page_min * large_page_min;
+
+        void * data = VirtualAlloc(NULL, size_aligned, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
+        if (data == NULL) {
+            GGML_LOG_ERROR("%s: failed to allocate %6.2f MB with large pages (error code %lu)\n", __func__, size/(1024.0*1024.0), (unsigned long) GetLastError());
+            return NULL;
+        }
+
+        return data;
+    }
+
+    return _aligned_malloc(size, alignment);
+#else
     void * aligned_memory = NULL;
   #ifdef GGML_USE_CPU_HBM
     int result = hbw_posix_memalign(&aligned_memory, alignment, size);
@@ -388,7 +453,13 @@ void * ggml_aligned_malloc(size_t size) {
 void ggml_aligned_free(void * ptr, size_t size) {
     GGML_UNUSED(size);
 #if defined(_MSC_VER) || defined(__MINGW32__)
-    _aligned_free(ptr);
+    if (ptr != NULL) {
+        if (ggml_large_pages_enabled()) {
+            VirtualFree(ptr, 0, MEM_RELEASE);
+        } else {
+            _aligned_free(ptr);
+        }
+    }
 #elif GGML_USE_CPU_HBM
     if (ptr != NULL) {
         hbw_free(ptr);

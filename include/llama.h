@@ -327,6 +327,8 @@ extern "C" {
         enum llama_split_mode split_mode; // how to split the model across multiple GPUs
         enum llama_load_mode  load_mode;  // how to load the model
 
+        bool use_large_pages; // allocate model buffers from large pages (only valid with load_mode == LLAMA_LOAD_MODE_NONE)
+
         enum llama_lazy_mode lazy_mode; // on-demand reading of tensors marked by the arch
 
         // the GPU that is used for the entire model when split_mode is LLAMA_SPLIT_MODE_NONE

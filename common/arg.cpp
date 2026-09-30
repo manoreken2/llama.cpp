@@ -2704,6 +2704,16 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_LOAD_MODE"));
     add_opt(common_arg(
+        {"--large-page"}, "on|off",
+        "allocate model buffers from large pages (Windows only; requires the 'Lock pages in memory' right)\n"
+        "only valid with --load-mode none (default: off)\n",
+        [](common_params & params, const std::string & value) {
+            /**/ if (value == "on")  { params.use_large_pages = true;  }
+            else if (value == "off") { params.use_large_pages = false; }
+            else { throw std::invalid_argument("invalid value"); }
+        }
+    ));
+    add_opt(common_arg(
         {"-lzm", "--lazy-mode"}, "MODE",
         "on-demand reading of certain tensors, for example per-layer embeddings (default: auto)\n"
         "- on: read the rows of such tensors from disk on demand instead of keeping them resident (requires mmap)\n"

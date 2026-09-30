@@ -432,6 +432,12 @@ extern "C" {
     GGML_API ggml_backend_buffer_t      ggml_backend_cpu_buffer_from_ptr(void * ptr, size_t size);
     GGML_API ggml_backend_buffer_type_t ggml_backend_cpu_buffer_type(void);
 
+    // Control whether CPU buffers are allocated from large pages (Windows only).
+    // When enabled, ggml_aligned_malloc uses VirtualAlloc with MEM_LARGE_PAGES.
+    // Defaults to false.
+    GGML_API void ggml_set_large_pages(bool enabled);
+    GGML_API bool ggml_large_pages_enabled(void);
+
 #ifdef  __cplusplus
 }
 #endif
